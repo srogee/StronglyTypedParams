@@ -6,13 +6,22 @@ namespace StronglyTypedParams
     public class ParamRow
     {
         public int Id => Data.ID;
-        public string RowName;
+        public string RowName => Data.Name;
         protected SoulsFormats.PARAM.Row Data;
         protected Dictionary<string, ParamCell> CellsByName;
 
         public ParamRow()
         {
             CellsByName = new Dictionary<string, ParamCell>();
+        }
+
+        public ParamCell this[string name]
+        {
+            get
+            {
+                CellsByName.TryGetValue(name, out ParamCell cell);
+                return cell;
+            }
         }
 
         public void Load(SoulsFormats.PARAM.Row data)

@@ -6,13 +6,36 @@ using System.Xml.Linq;
 
 namespace StronglyTypedParams
 {
+    public class ParamInstance
+    {
+        public string InstanceName;
+        public string Type;
+        public string ClassName;
+    }
+
+    public class ParamType
+    {
+        public string Name;
+        public string Type;
+        public XElement Xml;
+    }
+
     public class ParamClassGenerator
     {
         public const string ParamDefinitionsDir = @"C:\Users\rid3r\Downloads\Yapped-Rune-Bear-2_1_0\Paramdex\ER\Defs";
         public const string ParamNamesDir = @"C:\Users\rid3r\Downloads\Yapped-Rune-Bear-2_1_0\Paramdex\ER\Names";
+        public const string ParamTdfsDir = @"C:\Users\rid3r\Downloads\Yapped-Rune-Bear-2_1_0\Paramdex\ER\Tdfs";
+        public const string RegulationInPath = @"Z:\SteamLibrary\steamapps\common\ELDEN RING\Game\regulation.bin.bak";
+        public const string RegulationOutPath = @"Z:\SteamLibrary\steamapps\common\ELDEN RING\Game\regulation.bin";
         private const string GeneratedClassesDir = @"C:\Users\rid3r\Documents\GitHub\StronglyTypedParams\Generated";
 
-        public static HashSet<string> CellNamesToIgnore = new HashSet<string>(new string[] { "pad", "padding", "reserve", "Reserved0", "reserved1", "reservedarea", "ReservedAreaWeaponTypeThatCanBeInstalled", "VisionDistance", "ColorShade1G", "ColorShade1B" }.Select(str => str.ToLower()));
+        public static HashSet<string> CellNamesToIgnore = new HashSet<string>(new string[] { "pad", "padding", "reserve", "Reserved0", "reserved1", "reservedarea", "ReservedAreaWeaponTypeThatCanBeInstalled", "VisionDistance", "ColorShade1G", "ColorShade1B", "Blank" }.Select(str => str.ToLower()));
+        private HashSet<string> GeneratedEnums;
+
+        private ParamClassGenerator()
+        {
+            GeneratedEnums = new HashSet<string>();
+        }
 
         public static void Generate()
         {
@@ -32,16 +55,70 @@ namespace StronglyTypedParams
             }
         }
 
+        private List<ParamInstance> GetParamNamesAndTypes()
+        {
+            var regulationParams = SoulsFormats.SFUtil.DecryptERRegulation(RegulationInPath);
+            var returnValue = new List<ParamInstance>();
+
+            // Debug
+            foreach (var file in regulationParams.Files)
+            {
+                var soulsParam = SoulsFormats.PARAM.Read(file.Bytes);
+                var oneParam = new ParamInstance()
+                {
+                    InstanceName = Path.GetFileNameWithoutExtension(file.Name),
+                    Type = soulsParam.ParamType
+                };
+                returnValue.Add(oneParam);
+                Console.WriteLine($"{oneParam.InstanceName} - {oneParam.Type}");
+            }
+
+            return returnValue;
+        }
+
+        private List<ParamType> GetParamDefs()
+        {
+            var returnValue = new List<ParamType>();
+
+            foreach (var file in Directory.EnumerateFiles(ParamDefinitionsDir, "*.xml"))
+            {
+                var xml = XElement.Load(file);
+                var oneParamType = new ParamType()
+                {
+                    Name = Path.GetFileNameWithoutExtension(file),
+                    Type = xml.Descendants("ParamType").First().Value,
+                    Xml = xml
+                };
+                returnValue.Add(oneParamType);
+            }
+
+            return returnValue;
+        }
+
         public void Run()
         {
             Directory.CreateDirectory(GeneratedClassesDir);
 
-            var paramNames = new List<string>();
-            foreach (var file in Directory.EnumerateFiles(ParamDefinitionsDir, "*.xml"))
+            string enums = "";
+            foreach (var paramTdfFile in Directory.EnumerateFiles(ParamTdfsDir, "*.tdf"))
             {
-                var paramName = Path.GetFileNameWithoutExtension(file);
-                paramNames.Add(paramName);
-                AddSource($"{paramName}.cs", GenerateParamRowClass(paramName, file));
+                var enumName = Path.GetFileNameWithoutExtension(paramTdfFile);
+                var generatedCode = GenerateEnum(enumName, File.ReadAllText(paramTdfFile));
+                GeneratedEnums.Add(enumName);
+                enums += generatedCode;
+            }
+            AddSource("Enums.cs", enums);
+
+            var paramInstances = GetParamNamesAndTypes();
+            var paramDefs = GetParamDefs();
+
+            foreach (var paramDef in paramDefs)
+            {
+                AddSource($"{paramDef.Name}.cs", GenerateParamRowClass(paramDef));
+                var instances = paramInstances.Where(param => param.Type == paramDef.Type);
+                foreach (var instance in instances) {
+                    instance.ClassName = paramDef.Name;
+                }
             }
 
             var source = $@"
@@ -57,22 +134,34 @@ namespace StronglyTypedParams
                     private BND4 Data;
                     private Dictionary<string, object> ParamsByName;
 
-                    public RegulationParams(BND4 data)
+                    private RegulationParams(BND4 data)
                     {{
                         Data = data;
                         ParamsByName = new Dictionary<string, object>();
                     }}
 
-                    private ParamCollection<T> GetOrLoadParam<T>(string paramName) where T : ParamRow, new()
+                    public static RegulationParams Load(string path)
+                    {{
+                        var data = SFUtil.DecryptERRegulation(path);
+                        return new RegulationParams(data);
+                    }}
+
+                    public void Save(string path)
+                    {{
+                        {string.Join("\n", paramInstances.Select(param => $"SaveParam<{param.ClassName}>(\"{param.InstanceName}\");"))}
+                        SFUtil.EncryptERRegulation(path, Data);
+                    }}
+
+                    private ParamCollection<T> GetOrLoadParam<T>(string paramName, string paramClassName) where T : ParamRow, new()
                     {{
                         if (!ParamsByName.ContainsKey(paramName)) {{
-                            LoadParam<T>(paramName);
+                            LoadParam<T>(paramName, paramClassName);
                         }}
 
                         return (ParamCollection<T>)ParamsByName[paramName];
                     }}
 
-                    private void LoadParam<T>(string paramName) where T : ParamRow, new()
+                    private void LoadParam<T>(string paramName, string paramClassName) where T : ParamRow, new()
                     {{
                         Console.WriteLine(""Loading param "" + paramName);
                         BinderFile paramFile = Data.Files.Find(file => Path.GetFileNameWithoutExtension(file.Name) == paramName);
@@ -82,13 +171,26 @@ namespace StronglyTypedParams
                             ParamsByName.Add(paramName, null);
                             return;
                         }}
-                        var paramCollection = new ParamCollection<T>(PARAM.Read(paramFile.Bytes), paramName);
+                        var paramCollection = new ParamCollection<T>(PARAM.Read(paramFile.Bytes), paramName, paramClassName);
                         ParamsByName.Add(paramName, paramCollection);
                     }}
+
+                    private void SaveParam<T>(string paramName) where T : ParamRow, new()
+                    {{
+                        if (ParamsByName.ContainsKey(paramName))
+                        {{
+                            BinderFile paramFile = Data.Files.Find(file => Path.GetFileNameWithoutExtension(file.Name) == paramName);
+                            if (paramFile != null && ParamsByName[paramName] != null)
+                            {{
+                                var collection = ParamsByName[paramName] as ParamCollection<T>;
+                                paramFile.Bytes = collection.ToByteArray();
+                            }}
+                        }}
+                    }}
             ";
-            foreach (var paramName in paramNames)
+            foreach (var param in paramInstances)
             {
-                source += $"\n\t\tpublic ParamCollection<{paramName}> {paramName} => GetOrLoadParam<{paramName}>(\"{paramName}\");";
+                source += $"\n\t\tpublic ParamCollection<{param.ClassName}> {param.InstanceName} => GetOrLoadParam<{param.ClassName}>(\"{param.InstanceName}\",\"{param.ClassName}\");";
             }
             source += $@"
                 }}
@@ -100,8 +202,9 @@ namespace StronglyTypedParams
         private string GenerateProperty(XElement fieldDef, HashSet<string> existingFieldNames)
         {
             var def = fieldDef.Attribute("Def").Value;
+            var enumName = fieldDef.Descendants("Enum").FirstOrDefault()?.Value;
             var splitDef = def.Split(new char[] { ' ', ':', '[' });
-            var type = GetTypeFromSoulsType(splitDef[0]);
+            var backingType = GetTypeFromSoulsType(splitDef[0]);
             var displayName = fieldDef.Descendants("DisplayName").First().Value;
             var name = GetFieldName(displayName);
             if (string.IsNullOrWhiteSpace(name))
@@ -119,6 +222,12 @@ namespace StronglyTypedParams
             var description = fieldDef.Descendants("Description").FirstOrDefault()?.Value;
             description = description?.Replace("\n", "\n///");
 
+            var type = backingType;
+            if (!string.IsNullOrWhiteSpace(enumName) && GeneratedEnums.Contains(enumName))
+            {
+                type = GetFriendlyEnumName(enumName);
+            }
+
             return $@"
             // Def=""{def}""
             /// <summary>
@@ -130,7 +239,7 @@ namespace StronglyTypedParams
             public {type} {name} 
             {{
                 get => ({type})CellsByName[""{name}""].Value;
-                set => CellsByName[""{name}""].Value = value;
+                set => CellsByName[""{name}""].Value = ({backingType})value;
             }}
             ";
         }
@@ -182,20 +291,70 @@ namespace StronglyTypedParams
             }
         }
 
-        private string GenerateParamRowClass(string paramName, string paramDefPath)
+        private string GenerateEnum(string enumName, string definition)
         {
-            var defs = XElement.Load(paramDefPath);
+            var paramTdf = new SoulsFormats.PARAMTDF(definition);
+            var soulsTypeName = Enum.GetName(typeof(SoulsFormats.PARAMDEF.DefType), paramTdf.Type);
+            var existingNames = new HashSet<string>();
+            string source = $@"
+                // {enumName}
+                public enum {GetFriendlyEnumName(enumName)} : {GetTypeFromSoulsType(soulsTypeName)}
+                {{
+                    {string.Join(",\n", paramTdf.Entries.Select(entry => $"{GetEnumValueName(entry.Name)} = {entry.Value}"))}
+                }}
+            ";
+
+            string GetEnumValueName(string name)
+            {
+                var initialName = GetFieldName(name);
+                var finalName = initialName;
+                var counter = 1;
+                while (existingNames.Contains(finalName))
+                {
+                    counter++;
+                    finalName = initialName + counter;
+                }
+                existingNames.Add(finalName);
+                return finalName;
+            }
+
+            return source;
+        }
+
+        private string GetFriendlyEnumName(string enumName)
+        {
+            var caps = true;
+            var allowedCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+            var result = "";
+            foreach (var character in enumName)
+            {
+                if (allowedCharacters.Contains(character))
+                {
+                    result += caps ? character.ToString().ToUpper() : character.ToString().ToLower();
+                    caps = false;
+                }
+                else
+                {
+                    caps = true;
+                }
+            }
+            return result;
+        }
+
+        private string GenerateParamRowClass(ParamType paramDef)
+        {
             string source = $@"
             namespace StronglyTypedParams
             {{
-                public class {paramName} : ParamRow
+                // {paramDef.Type}
+                public class {paramDef.Name} : ParamRow
                 {{
-                    public {paramName}() : base()
+                    public {paramDef.Name}() : base()
                     {{
                     }}
             ";
 
-            var fields = defs.Descendants("Fields").First().Descendants("Field");
+            var fields = paramDef.Xml.Descendants("Fields").First().Descendants("Field");
 
             HashSet<string> existingFieldNames = new HashSet<string>();
             foreach (var def in fields)
