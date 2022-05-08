@@ -103,6 +103,10 @@ namespace StronglyTypedParams
             try
             {
                 RowsById.Add(data.ID, rowAsT);
+                if (!Data.Rows.Any(row => row.ID == data.ID))
+                {
+                    Data.Rows.Add(data);
+                }
             }
             catch (Exception e)
             {

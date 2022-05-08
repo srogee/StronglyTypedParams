@@ -224,7 +224,6 @@ SaveParam<WwiseValueToStrConvertParamFormat>("WwiseValueToStrParam_Switch_Player
 
                     private void LoadParam<T>(string paramName, string paramClassName) where T : ParamRow, new()
                     {
-                        Console.WriteLine("Loading param " + paramName);
                         BinderFile paramFile = Data.Files.Find(file => Path.GetFileNameWithoutExtension(file.Name) == paramName);
 						if (paramFile == null)
                         {
